@@ -1,51 +1,77 @@
 
-# Import necessary libraries
 import numpy as np
-import joblib  # For loading the serialized model
-import pandas as pd  # For data manipulation
-from flask import Flask, request, jsonify  # For creating the Flask API
+import pandas as pd
+import joblib
+import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
-# Initialize Flask app with a name
-superkart_api = Flask("SuperKartSalesAPI") 
+# Initialize Flask app
+superkart_api = Flask("superkart_sales_api")
+CORS(superkart_api)
 
-# Load the trained churn prediction model
-# model = joblib.load("backend_files/xgb_tuned_model.joblib") 
-model = joblib.load("xgb_tuned_model.joblib") 
-# Define a route for the home page
+# Load the trained model pipeline (handling both local and container root paths dynamically)
+model_path = "xgb_tuned_model.joblib"
+if not os.path.exists(model_path):
+    # Fallback to subdirectory if run from parent folder
+    model_path = os.path.join("backend_files", "xgb_tuned_model.joblib")
+
+print(f"Loading model from: {model_path}")
+model = joblib.load(model_path)
+
+# Health check route
 @superkart_api.get('/')
 def home():
-    return "Welcome to the SuperKart Sales Prediction API!"
+    return "✅ Welcome to the SuperKart Sales Prediction API"
 
-# Define an endpoint to predict churn for a single customer
+# Prediction route
 @superkart_api.post('/v1/predict')
 def predict_sales():
-    # Get JSON data from the request
-    data = request.get_json()
+    try:
+        # Parse JSON payload
+        data = request.get_json()
+        print("Raw incoming data:", data)
 
-    # Extract relevant customer features from the input data. The order of the column names matters.
-    sample = {
-        'Product_Weight': data['Product_Weight'],
-        'Product_Sugar_Content': data['Product_Sugar_Content'],
-        'Product_Allocated_Area': data['Product_Allocated_Area'],
-        'Product_MRP': data['Product_MRP'],
-        'Store_Size': data['Store_Size'],
-        'Store_Location_City_Type': data['Store_Location_City_Type'],
-        'Store_Type': data['Store_Type'],
-        'Product_Id_char': data['Product_Id_char'],
-        'Store_Age_Years': data['Store_Age_Years'],
-        'Product_Type_Category': data['Product_Type_Category']
-    }
+        # Validate expected fields
+        required_fields = [
+            'Product_Weight',
+            'Product_Sugar_Content',
+            'Product_Allocated_Area',
+            'Product_MRP',
+            'Store_Size',
+            'Store_Location_City_Type',
+            'Store_Type',
+            'Store_Age_Years',
+            'Product_Type_Category'
+        ]
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            return jsonify({'error': f"Missing fields: {missing_fields}"}), 400
 
-    # Convert the extracted data into a DataFrame
-    input_data = pd.DataFrame([sample])
+        # Convert and transform input
+        sample = {
+            'Product_Weight': float(data['Product_Weight']),
+            'Product_Sugar_Content': data['Product_Sugar_Content'],
+            'Product_Allocated_Area_Log': np.log1p(float(data['Product_Allocated_Area'])),  # transform here
+            'Product_MRP': float(data['Product_MRP']),
+            'Store_Size': data['Store_Size'],
+            'Store_Location_City_Type': data['Store_Location_City_Type'],
+            'Store_Type': data['Store_Type'],
+            'Store_Age_Years': int(data['Store_Age_Years']),
+            'Product_Type_Category': data['Product_Type_Category']
+        }
 
-    # Make a churn prediction using the trained model
-    prediction = model.predict(input_data).tolist()[0]
+        input_df = pd.DataFrame([sample])
+        print("Transformed input for model:\n", input_df)
 
-    # Return the prediction as a JSON response
-    return jsonify({'Sales': prediction})
+        # Make prediction
+        prediction = model.predict(input_df).tolist()[0]
+        return jsonify({'Predicted_Sales': prediction})
 
+    except Exception as e:
+        print("❌ Error during prediction:", str(e))
+        return jsonify({'error': f"Prediction failed: {str(e)}"}), 500
 
-# Run the Flask app in debug mode
+# Run the app (for local testing only)
 if __name__ == '__main__':
     superkart_api.run(debug=True)
